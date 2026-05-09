@@ -1,0 +1,5 @@
+*.uasset binary
+*.umap binary
+*.dll binary
+*.pdb binary
+*.lib binary

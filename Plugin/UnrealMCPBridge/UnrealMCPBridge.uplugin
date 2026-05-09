@@ -1,0 +1,19 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Unreal MCP Bridge",
+  "Description": "JSON-RPC 2.0 bridge between Unreal Editor and MCP clients",
+  "Category": "Editor",
+  "CreatedBy": "YomenStyle",
+  "EnabledByDefault": true,
+  "CanContainContent": false,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "UnrealMCPBridge",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ]
+}
