@@ -2,6 +2,7 @@
 #include "UnrealMCPBridgeModule.h"
 #include "MCPSettings.h"
 #include "Editor.h"
+#include "Misc/CoreDelegates.h"
 #include "Commands/EditorCommands.h"
 #include "Commands/BlueprintCommands.h"
 #include "Commands/AssetCommands.h"
@@ -50,7 +51,7 @@ void UMCPBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     Server->StartThread();
 
     // Ensure clean shutdown when the editor exits.
-    OnExitHandle = FEditorDelegates::OnExit.AddUObject(this, &UMCPBridgeSubsystem::HandleEditorExit);
+    OnExitHandle = FCoreDelegates::OnPreExit.AddUObject(this, &UMCPBridgeSubsystem::HandleEditorExit);
 
     UE_LOG(LogMCPBridge, Log,
         TEXT("MCPBridgeSubsystem: started listener on %s:%d."), *Settings->Host, Settings->Port);
@@ -73,7 +74,7 @@ void UMCPBridgeSubsystem::HandleEditorExit()
 
     if (OnExitHandle.IsValid())
     {
-        FEditorDelegates::OnExit.Remove(OnExitHandle);
+        FCoreDelegates::OnPreExit.Remove(OnExitHandle);
         OnExitHandle.Reset();
     }
 }

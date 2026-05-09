@@ -4,9 +4,20 @@
 #include "Async/Async.h"
 #include "Async/Future.h"
 #include "SocketSubsystem.h"
+#include "SocketTypes.h"
 #include "IPAddress.h"
 #include "Sockets.h"
 #include "Common/TcpSocketBuilder.h"
+
+namespace
+{
+    // Max bytes pulled from the socket per Recv call. Larger reduces syscall overhead.
+    constexpr int32 RecvChunkBytes = 4096;
+    // Polling cadence for read/write readiness; smaller = faster Stop response, more CPU.
+    constexpr double ReadPollMillis = 200.0;
+    // Hard cap so SendResponse cannot wedge if the peer stops draining.
+    constexpr double SendWaitSeconds = 5.0;
+}
 
 FMCPServerRunnable::FMCPServerRunnable(
     const FString& Host,
@@ -116,6 +127,9 @@ uint32 FMCPServerRunnable::Run()
         UE_LOG(LogMCPBridge, Log, TEXT("MCPServerRunnable: client connected from %s."),
             *ClientAddr->ToString(true));
 
+        // Fresh receive buffer for each new client to avoid cross-session bleed.
+        ReceiveBuffer.Reset();
+
         // Persistent per-client loop.
         while (!bStopRequested)
         {
@@ -214,46 +228,81 @@ void FMCPServerRunnable::RequestStopAndWait()
 bool FMCPServerRunnable::ReceiveLine(FSocket* ClientSocket, FString& OutLine, bool& bOutExceededLimit)
 {
     bOutExceededLimit = false;
-    TArray<uint8> Buffer;
-    uint8 ByteBuf[1];
-    int32 BytesRead = 0;
+    const FTimespan PollWindow = FTimespan::FromMilliseconds(ReadPollMillis);
 
-    while (true)
+    while (!bStopRequested)
     {
-        if (!ClientSocket->Recv(ByteBuf, 1, BytesRead))
+        // Drain any complete line already sitting in the buffer before touching the socket.
+        for (int32 i = 0; i < ReceiveBuffer.Num(); ++i)
+        {
+            if (ReceiveBuffer[i] == '\n')
+            {
+                TArray<uint8> LineBytes;
+                LineBytes.Append(ReceiveBuffer.GetData(), i);
+                LineBytes.Add(0);
+                OutLine = FString(UTF8_TO_TCHAR(reinterpret_cast<const ANSICHAR*>(LineBytes.GetData())));
+                OutLine.TrimEndInline();
+
+                TArray<uint8> Remaining;
+                const int32 LeftoverCount = ReceiveBuffer.Num() - (i + 1);
+                if (LeftoverCount > 0)
+                {
+                    Remaining.Append(ReceiveBuffer.GetData() + i + 1, LeftoverCount);
+                }
+                ReceiveBuffer = MoveTemp(Remaining);
+                return true;
+            }
+        }
+
+        if (ReceiveBuffer.Num() > MaxLineBytesLimit)
+        {
+            bOutExceededLimit = true;
+            return false;
+        }
+
+        // Poll for read readiness with a short window so we can react to Stop quickly
+        // and never block indefinitely on a quiet socket.
+        if (!ClientSocket->Wait(ESocketWaitConditions::WaitForRead, PollWindow))
+        {
+            // No data within window. Verify the connection is still up; if not, bail out.
+            const ESocketConnectionState State = ClientSocket->GetConnectionState();
+            if (State != SCS_Connected)
+            {
+                return false;
+            }
+            continue;
+        }
+
+        uint8 Chunk[RecvChunkBytes];
+        int32 BytesRead = 0;
+        if (!ClientSocket->Recv(Chunk, sizeof(Chunk), BytesRead))
         {
             return false;
         }
         if (BytesRead == 0)
         {
-            // Connection closed gracefully.
+            // Peer closed gracefully.
             return false;
         }
 
-        if (ByteBuf[0] == '\n')
-        {
-            // Line complete.
-            OutLine = FString(UTF8_TO_TCHAR(reinterpret_cast<const ANSICHAR*>(Buffer.GetData())));
-            // Trim trailing '\r' for Windows-style line endings.
-            OutLine.TrimEndInline();
-            return true;
-        }
-
-        Buffer.Add(ByteBuf[0]);
-
-        if (Buffer.Num() > MaxLineBytesLimit)
-        {
-            bOutExceededLimit = true;
-            return false;
-        }
+        ReceiveBuffer.Append(Chunk, BytesRead);
     }
+
+    return false;
 }
 
 bool FMCPServerRunnable::SendResponse(FSocket* ClientSocket, const FString& Serialized)
 {
+    // Bound the send so a stalled peer cannot wedge the worker thread.
+    if (!ClientSocket->Wait(ESocketWaitConditions::WaitForWrite, FTimespan::FromSeconds(SendWaitSeconds)))
+    {
+        UE_LOG(LogMCPBridge, Warning, TEXT("MCPServerRunnable: socket not writable within timeout."));
+        return false;
+    }
+
     FTCHARToUTF8 Converter(*Serialized);
     const uint8* Data = reinterpret_cast<const uint8*>(Converter.Get());
-    int32 Length = Converter.Length();
+    const int32 Length = Converter.Length();
 
     int32 BytesSent = 0;
     bool bOk = ClientSocket->Send(Data, Length, BytesSent);
@@ -263,7 +312,6 @@ bool FMCPServerRunnable::SendResponse(FSocket* ClientSocket, const FString& Seri
         return false;
     }
 
-    // Send delimiter.
     const uint8 Newline = '\n';
     bOk = ClientSocket->Send(&Newline, 1, BytesSent);
     if (!bOk)

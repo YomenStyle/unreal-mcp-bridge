@@ -16,7 +16,6 @@ from .tools import (
 def main() -> None:
     settings = get_settings()
     conn = UnrealConnection(settings)
-    conn.connect()
 
     mcp = FastMCP("unreal-mcp-bridge")
 

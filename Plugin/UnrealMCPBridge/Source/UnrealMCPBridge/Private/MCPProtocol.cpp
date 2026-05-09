@@ -109,7 +109,8 @@ FString SerializeResponse(const FMCPResponse& Response)
     }
 
     FString Output;
-    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
+    TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+        TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Output);
     FJsonSerializer::Serialize(Root, Writer);
     return Output;
 }

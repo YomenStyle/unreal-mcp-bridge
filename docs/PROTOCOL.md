@@ -213,19 +213,19 @@ Error code `-32010` is returned when the LiveCoding module is not loaded or cann
 
 | Method      | Params                           | Result fields     | Description                              |
 |-------------|----------------------------------|-------------------|------------------------------------------|
-| `pie.start` | `mode?: string` ("PIE" or "SIE") | `started: bool`   | Starts a Play-In-Editor session          |
-| `pie.stop`  | —                                | `stopped: bool`   | Stops the active Play-In-Editor session  |
+| `pie.start` | `mode?: string` ("PIE" or "SIE") | `queued: bool`    | Queues a Play-In-Editor start (deferred to next tick) |
+| `pie.stop`  | —                                | `queued: bool`    | Queues an end-play request (deferred to next tick) |
 
 **pie.start example**
 ```json
 // request
 { "method": "pie.start", "params": { "mode": "PIE" } }
 // result
-{ "started": true }
+{ "queued": true }
 ```
 
 **pie.stop example**
 ```json
 // result
-{ "stopped": true }
+{ "queued": true }
 ```

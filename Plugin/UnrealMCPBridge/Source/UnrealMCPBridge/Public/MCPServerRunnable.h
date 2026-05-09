@@ -54,4 +54,7 @@ private:
     FSocket* ListenSocket = nullptr;
     FRunnableThread* Thread = nullptr;
     FThreadSafeBool bStopRequested;
+
+    // Accumulates bytes received from the current client across multiple ReceiveLine calls.
+    TArray<uint8> ReceiveBuffer;
 };
