@@ -8,6 +8,8 @@
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
+#include "IPythonScriptPlugin.h"
+#include "PythonScriptTypes.h"
 
 namespace
 {
@@ -204,6 +206,70 @@ void FEditorCommandHandler::RegisterCommands(FMCPCommandRegistry& Registry)
             auto Result = MakeShared<FJsonObject>();
             Result->SetStringField(TEXT("actor_name"), SpawnedActor->GetName());
             Result->SetStringField(TEXT("actor_path"), SpawnedActor->GetPathName());
+            return Result;
+        });
+
+    // editor.python_exec — runs arbitrary Python in the editor via IPythonScriptPlugin.
+    // Params: script (string, required) — Python code or file path with optional args.
+    //         mode (string, optional) — "ExecuteFile" (default), "ExecuteStatement", or "EvaluateStatement".
+    Registry.Register(TEXT("editor.python_exec"),
+        [](const TSharedPtr<FJsonObject>& Params, MCPProtocol::FMCPError& OutError) -> TSharedPtr<FJsonObject>
+        {
+            if (!Params.IsValid())
+            {
+                OutError.Code = MCPProtocol::FMCPError::InvalidParams;
+                OutError.Message = TEXT("params object is required");
+                return nullptr;
+            }
+
+            FString Script;
+            if (!Params->TryGetStringField(TEXT("script"), Script))
+            {
+                OutError.Code = MCPProtocol::FMCPError::InvalidParams;
+                OutError.Message = TEXT("script is required");
+                return nullptr;
+            }
+
+            IPythonScriptPlugin* PyPlugin = IPythonScriptPlugin::Get();
+            if (!PyPlugin)
+            {
+                OutError.Code = MCPProtocol::FMCPError::InternalError;
+                OutError.Message = TEXT("PythonScriptPlugin module not loaded");
+                return nullptr;
+            }
+            if (!PyPlugin->IsPythonAvailable())
+            {
+                OutError.Code = MCPProtocol::FMCPError::InternalError;
+                OutError.Message = TEXT("Python is not available in this editor build");
+                return nullptr;
+            }
+
+            FString ModeStr;
+            Params->TryGetStringField(TEXT("mode"), ModeStr);
+
+            FPythonCommandEx PyCmd;
+            PyCmd.Command = Script;
+            PyCmd.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
+            if (!ModeStr.IsEmpty())
+            {
+                LexFromString(PyCmd.ExecutionMode, *ModeStr);
+            }
+
+            const bool bOk = PyPlugin->ExecPythonCommandEx(PyCmd);
+
+            TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+            Result->SetBoolField(TEXT("success"), bOk);
+            Result->SetStringField(TEXT("result"), PyCmd.CommandResult);
+
+            TArray<TSharedPtr<FJsonValue>> LogArr;
+            for (const FPythonLogOutputEntry& Entry : PyCmd.LogOutput)
+            {
+                TSharedPtr<FJsonObject> LogEntryObj = MakeShared<FJsonObject>();
+                LogEntryObj->SetStringField(TEXT("type"), LexToString(Entry.Type));
+                LogEntryObj->SetStringField(TEXT("output"), Entry.Output);
+                LogArr.Add(MakeShared<FJsonValueObject>(LogEntryObj));
+            }
+            Result->SetArrayField(TEXT("log"), LogArr);
             return Result;
         });
 }

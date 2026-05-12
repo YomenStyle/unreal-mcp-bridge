@@ -35,3 +35,12 @@ def register_blueprint_tools(mcp: FastMCP, conn: UnrealConnection) -> None:
         if not blueprint_path:
             raise ValueError("blueprint_path is required")
         return conn.call("blueprint.list_variables", {"blueprint_path": blueprint_path})
+
+    @mcp.tool()
+    def blueprint_get_graph_nodes(blueprint_path: str, graph_name: str = "") -> dict:
+        if not blueprint_path:
+            raise ValueError("blueprint_path is required")
+        params: dict = {"blueprint_path": blueprint_path}
+        if graph_name:
+            params["graph_name"] = graph_name
+        return conn.call("blueprint.get_graph_nodes", params)

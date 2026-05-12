@@ -39,6 +39,7 @@ public class UnrealMCPBridge : ModuleRules
             "BlueprintGraph",
             "LiveCoding",
             "LevelEditor",
+            "PythonScriptPlugin",
         });
     }
 }

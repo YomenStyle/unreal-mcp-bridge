@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # Per-request response timeout in seconds.
     request_timeout: float = 30.0
     # Maximum accepted JSON line length in bytes (must match UE plugin setting).
-    max_line_bytes: int = 65536
+    max_line_bytes: int = 16777216
 
     model_config = SettingsConfigDict(
         env_prefix="UMCP_",

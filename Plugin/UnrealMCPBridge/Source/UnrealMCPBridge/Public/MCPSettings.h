@@ -30,7 +30,7 @@ public:
 
     // Maximum accepted JSON line length in bytes.
     UPROPERTY(EditAnywhere, config, Category="MCP")
-    int32 MaxLineBytes = 65536;
+    int32 MaxLineBytes = 16777216;
 
     virtual FName GetCategoryName() const override { return TEXT("Plugins"); }
 };

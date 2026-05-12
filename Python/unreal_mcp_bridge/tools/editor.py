@@ -34,3 +34,15 @@ def register_editor_tools(mcp: FastMCP, conn: UnrealConnection) -> None:
         if rotation is not None:
             params["rotation"] = rotation
         return conn.call("editor.spawn_actor", params)
+
+    @mcp.tool()
+    def editor_python_exec(script: str, mode: str = "ExecuteFile") -> dict:
+        """Run arbitrary Python inside the running Unreal Editor.
+
+        mode: "ExecuteFile" (default — multiple statements), "ExecuteStatement",
+              or "EvaluateStatement" (returns expression result).
+        Returns: {success, result, log[{type, output}]}.
+        """
+        if not script:
+            raise ValueError("script is required")
+        return conn.call("editor.python_exec", {"script": script, "mode": mode})
