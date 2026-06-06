@@ -12,7 +12,11 @@
 void UMCPBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
+    StartListener();
+}
 
+void UMCPBridgeSubsystem::StartListener()
+{
     const UMCPSettings* Settings = GetDefault<UMCPSettings>();
     if (!Settings->bEnabled || Settings->Port <= 0)
     {
@@ -23,21 +27,29 @@ void UMCPBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
         return;
     }
 
-    // Create the command registry that all domain handlers will populate.
-    Registry = MakeShared<FMCPCommandRegistry>();
-
-    // Register domain command handlers.
-    Handlers.Add(MakeShared<FEditorCommandHandler>());
-    Handlers.Add(MakeShared<FBlueprintCommandHandler>());
-    Handlers.Add(MakeShared<FAssetCommandHandler>());
-    Handlers.Add(MakeShared<FCompileCommandHandler>());
-    Handlers.Add(MakeShared<FPIECommandHandler>());
-
-    for (const TSharedPtr<IMCPCommandHandler>& Handler : Handlers)
+    if (Server)
     {
-        if (Handler.IsValid())
+        // Already listening — nothing to do.
+        return;
+    }
+
+    // Create the command registry + domain handlers once; reuse across restarts.
+    if (!Registry.IsValid())
+    {
+        Registry = MakeShared<FMCPCommandRegistry>();
+
+        Handlers.Add(MakeShared<FEditorCommandHandler>());
+        Handlers.Add(MakeShared<FBlueprintCommandHandler>());
+        Handlers.Add(MakeShared<FAssetCommandHandler>());
+        Handlers.Add(MakeShared<FCompileCommandHandler>());
+        Handlers.Add(MakeShared<FPIECommandHandler>());
+
+        for (const TSharedPtr<IMCPCommandHandler>& Handler : Handlers)
         {
-            Handler->RegisterCommands(*Registry);
+            if (Handler.IsValid())
+            {
+                Handler->RegisterCommands(*Registry);
+            }
         }
     }
 
@@ -51,10 +63,29 @@ void UMCPBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     Server->StartThread();
 
     // Ensure clean shutdown when the editor exits.
-    OnExitHandle = FCoreDelegates::OnPreExit.AddUObject(this, &UMCPBridgeSubsystem::HandleEditorExit);
+    if (!OnExitHandle.IsValid())
+    {
+        OnExitHandle = FCoreDelegates::OnPreExit.AddUObject(this, &UMCPBridgeSubsystem::HandleEditorExit);
+    }
 
     UE_LOG(LogMCPBridge, Log,
         TEXT("MCPBridgeSubsystem: started listener on %s:%d."), *Settings->Host, Settings->Port);
+}
+
+void UMCPBridgeSubsystem::StopListener()
+{
+    if (Server)
+    {
+        UE_LOG(LogMCPBridge, Log, TEXT("MCPBridgeSubsystem: stopping listener."));
+        Server->RequestStopAndWait();
+        Server.Reset();
+    }
+}
+
+void UMCPBridgeSubsystem::RestartFromSettings()
+{
+    StopListener();
+    StartListener();
 }
 
 void UMCPBridgeSubsystem::Deinitialize()
@@ -65,12 +96,7 @@ void UMCPBridgeSubsystem::Deinitialize()
 
 void UMCPBridgeSubsystem::HandleEditorExit()
 {
-    if (Server)
-    {
-        UE_LOG(LogMCPBridge, Log, TEXT("MCPBridgeSubsystem: stopping server."));
-        Server->RequestStopAndWait();
-        Server.Reset();
-    }
+    StopListener();
 
     if (OnExitHandle.IsValid())
     {

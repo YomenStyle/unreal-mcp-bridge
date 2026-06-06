@@ -33,4 +33,10 @@ public:
     int32 MaxLineBytes = 16777216;
 
     virtual FName GetCategoryName() const override { return TEXT("Plugins"); }
+
+#if WITH_EDITOR
+    // Restart the bridge listener whenever a setting changes, so toggling
+    // bEnabled / Port in Project Settings takes effect without an editor restart.
+    virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 };
