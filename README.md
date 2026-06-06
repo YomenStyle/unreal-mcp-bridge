@@ -33,9 +33,17 @@ MCP Client (Claude, etc.)
 2. Regenerate project files and build.
 3. Enable the plugin in **Edit → Plugins → Editor → Unreal MCP Bridge**.
 4. Configure the listener in **Edit → Project Settings → Plugins → Unreal MCP Bridge**:
-   - **Enabled**: true
+   - **Enabled**: `true` — **required**. The bridge is **disabled by default**; the
+     listener will not start until you turn this on.
    - **Port**: e.g. `30100` (must be > 0 to start the listener)
    - **Host**: `127.0.0.1` (loopback only recommended)
+
+> **You must set `Enabled = true` (and a valid `Port`) to use the bridge.**
+> While disabled it does nothing and MCP clients get *connection refused*.
+
+Changes apply **immediately** — toggling **Enabled** or changing the **Port** in
+Project Settings starts/restarts the listener on the spot, **no editor restart
+required**. (The listener also auto-starts on editor launch whenever it is enabled.)
 
 The corresponding `DefaultEngine.ini` section is:
 ```ini
