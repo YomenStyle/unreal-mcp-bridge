@@ -44,3 +44,16 @@ def register_blueprint_tools(mcp: FastMCP, conn: UnrealConnection) -> None:
         if graph_name:
             params["graph_name"] = graph_name
         return conn.call("blueprint.get_graph_nodes", params)
+
+    @mcp.tool()
+    def blueprint_list_functions(blueprint_path: str, graph_name: str = "") -> dict:
+        """Lightweight inventory of a Blueprint's graphs: name, graph_type
+        (ubergraph/function/macro), node_count, and for function graphs the
+        resolved input/output signature. Use this before blueprint_get_graph_nodes
+        to see what's there without pulling every node."""
+        if not blueprint_path:
+            raise ValueError("blueprint_path is required")
+        params: dict = {"blueprint_path": blueprint_path}
+        if graph_name:
+            params["graph_name"] = graph_name
+        return conn.call("blueprint.list_functions", params)
