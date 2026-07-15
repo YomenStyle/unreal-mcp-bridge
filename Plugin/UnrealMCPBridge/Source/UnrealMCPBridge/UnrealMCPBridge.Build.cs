@@ -40,6 +40,14 @@ public class UnrealMCPBridge : ModuleRules
             "LiveCoding",
             "LevelEditor",
             "PythonScriptPlugin",
+            "AnimGraph",
+            "AnimGraphRuntime",
+            // StateTree authoring (states/evaluators/tasks/transitions/bindings/compile)
+            "StateTreeModule",
+            "StateTreeEditorModule",
+            "PropertyBindingUtils",
+            // Gameplay Camera System rig editing (node inspection + property tuning)
+            "GameplayCameras",
         });
     }
 }

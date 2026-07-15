@@ -2,6 +2,7 @@
 #include "Commands/CommandJsonHelpers.h"
 #include "MCPCommandRegistry.h"
 #include "MCPProtocol.h"
+#include "MCPGraphEditLibrary.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -298,6 +299,16 @@ void FBlueprintCommandHandler::RegisterCommands(FMCPCommandRegistry& Registry)
             AddGraphs(BP->UbergraphPages, TEXT("ubergraph"));
             AddGraphs(BP->FunctionGraphs, TEXT("function"));
             AddGraphs(BP->MacroGraphs, TEXT("macro"));
+
+            // Not found among top-level graphs — for AnimBlueprints, GraphNameFilter may name a
+            // nested graph (state machine inner graph, state bound graph, transition rule graph).
+            if (AllGraphs.Num() == 0 && !GraphNameFilter.IsEmpty())
+            {
+                if (UEdGraph* Nested = UMCPGraphEditLibrary::FindGraphByName(BP, GraphNameFilter))
+                {
+                    AllGraphs.Add(MakeShared<FJsonValueObject>(BuildGraphJson(Nested, TEXT("nested"))));
+                }
+            }
 
             TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
             Result->SetArrayField(TEXT("graphs"), AllGraphs);

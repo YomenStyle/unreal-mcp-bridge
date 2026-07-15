@@ -10,6 +10,9 @@ from .tools import (
     register_asset_tools,
     register_compile_tools,
     register_pie_tools,
+    register_animgraph_tools,
+    register_statetree_tools,
+    register_camerarig_tools,
 )
 
 
@@ -24,6 +27,9 @@ def main() -> None:
     register_asset_tools(mcp, conn)
     register_compile_tools(mcp, conn)
     register_pie_tools(mcp, conn)
+    register_animgraph_tools(mcp, conn)
+    register_statetree_tools(mcp, conn)
+    register_camerarig_tools(mcp, conn)
 
     try:
         mcp.run(transport="stdio")
