@@ -27,10 +27,13 @@
 #include "AnimStateNodeBase.h"
 #include "AnimStateEntryNode.h"
 #include "AnimStateTransitionNode.h"
+#include "AnimGraphNode_Base.h"
 #include "AnimGraphNode_BlendSpacePlayer.h"
 #include "AnimGraphNode_SequencePlayer.h"
+#include "AnimGraphNode_SaveCachedPose.h"
 #include "AnimGraphNode_Slot.h"
 #include "AnimGraphNode_TransitionResult.h"
+#include "AnimGraphNode_UseCachedPose.h"
 
 UEdGraph* UMCPGraphEditLibrary::FindGraphByName(UBlueprint* BP, const FString& GraphName)
 {
@@ -268,7 +271,33 @@ bool UMCPGraphEditLibrary::ConnectPins(
         return false;
     }
 
-    SrcPin->MakeLinkTo(DstPin);
+    // Through the schema, not SrcPin->MakeLinkTo(DstPin): a raw MakeLinkTo produces a link that reads
+    // back correctly (and compiles without complaint) while the anim compiler never turns it into a
+    // pose LinkID, so the graph silently evaluates to ref pose. TryCreateConnection is what the editor
+    // itself does on a drag — it validates the pair, notifies both nodes, and inserts any conversion
+    // node the pair needs (e.g. local <-> component space pose).
+    const UEdGraphSchema* Schema = Graph->GetSchema();
+    if (!Schema)
+    {
+        UE_LOG(LogMCPBridge, Warning, TEXT("ConnectPins: graph '%s' has no schema"), *GraphName);
+        return false;
+    }
+
+    const FPinConnectionResponse Response = Schema->CanCreateConnection(SrcPin, DstPin);
+    if (Response.Response == CONNECT_RESPONSE_DISALLOW)
+    {
+        UE_LOG(LogMCPBridge, Warning, TEXT("ConnectPins: schema refused %s.%s -> %s.%s: %s"),
+            *SrcNodeName, *SrcPinName, *DstNodeName, *DstPinName, *Response.Message.ToString());
+        return false;
+    }
+
+    if (!Schema->TryCreateConnection(SrcPin, DstPin))
+    {
+        UE_LOG(LogMCPBridge, Warning, TEXT("ConnectPins: TryCreateConnection failed %s.%s -> %s.%s"),
+            *SrcNodeName, *SrcPinName, *DstNodeName, *DstPinName);
+        return false;
+    }
+
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
     Blueprint->MarkPackageDirty();
     return true;
@@ -543,13 +572,17 @@ FString UMCPGraphEditLibrary::AddBlendSpacePlayerToState(
         return FString();
     }
 
-    UAnimGraphNode_BlendSpacePlayer* BSNode = NewObject<UAnimGraphNode_BlendSpacePlayer>(StateNode->BoundGraph);
-    StateNode->BoundGraph->AddNode(BSNode, false, false);
-    BSNode->CreateNewGuid();
+    // Build it the way the editor does. A BlendSpacePlayer's axis pins (X/Y) are generated from the
+    // *asset's* axes, so the asset has to be set before pins are allocated — raw NewObject +
+    // AllocateDefaultPins() leaves the axis pins unreconstructed and nothing can bind to Speed.
+    // FGraphNodeCreator::Finalize() runs PostPlacedNewNode + AllocateDefaultPins in the right order.
+    FGraphNodeCreator<UAnimGraphNode_BlendSpacePlayer> Creator(*StateNode->BoundGraph);
+    UAnimGraphNode_BlendSpacePlayer* BSNode = Creator.CreateNode(/*bSelectNewNode*/ false);
     BSNode->NodePosX = PosX;
     BSNode->NodePosY = PosY;
     BSNode->Node.SetBlendSpace(BlendSpaceAsset);
-    BSNode->AllocateDefaultPins();
+    Creator.Finalize();
+    BSNode->ReconstructNode();
 
     UEdGraphPin* PoseSink = StateNode->GetPoseSinkPinInsideState();
     UEdGraphPin* PoseOutput = FindPinByName(BSNode, TEXT("Pose"));
@@ -604,14 +637,16 @@ FString UMCPGraphEditLibrary::AddSequencePlayerToState(
         return FString();
     }
 
-    UAnimGraphNode_SequencePlayer* SeqNode = NewObject<UAnimGraphNode_SequencePlayer>(StateNode->BoundGraph);
-    StateNode->BoundGraph->AddNode(SeqNode, false, false);
-    SeqNode->CreateNewGuid();
+    // Same reason as the blend space above: the sequence has to be set before pins are allocated, which
+    // is what the editor's FGraphNodeCreator ordering guarantees.
+    FGraphNodeCreator<UAnimGraphNode_SequencePlayer> Creator(*StateNode->BoundGraph);
+    UAnimGraphNode_SequencePlayer* SeqNode = Creator.CreateNode(/*bSelectNewNode*/ false);
     SeqNode->NodePosX = PosX;
     SeqNode->NodePosY = PosY;
     SeqNode->Node.SetSequence(SequenceAsset);
     SeqNode->Node.SetLoopAnimation(bLoop);
-    SeqNode->AllocateDefaultPins();
+    Creator.Finalize();
+    SeqNode->ReconstructNode();
 
     UEdGraphPin* PoseSink = StateNode->GetPoseSinkPinInsideState();
     UEdGraphPin* PoseOutput = FindPinByName(SeqNode, TEXT("Pose"));
@@ -629,6 +664,84 @@ FString UMCPGraphEditLibrary::AddSequencePlayerToState(
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBlueprint);
     AnimBlueprint->MarkPackageDirty();
     return SeqNode->GetName();
+}
+
+FString UMCPGraphEditLibrary::AddAnimGraphNode(
+    UAnimBlueprint* AnimBlueprint,
+    const FString& GraphName,
+    const FString& NodeClassPath,
+    int32 PosX,
+    int32 PosY)
+{
+    if (!AnimBlueprint) return FString();
+    UEdGraph* Graph = FindGraphByName(AnimBlueprint, GraphName);
+    if (!Graph)
+    {
+        UE_LOG(LogMCPBridge, Warning, TEXT("AddAnimGraphNode: graph '%s' not found"), *GraphName);
+        return FString();
+    }
+
+    // LoadClass rejects anything that isn't a UAnimGraphNode_Base, so a wrong path fails here rather
+    // than by leaving a node the anim compiler can't make sense of in the graph.
+    UClass* NodeClass = LoadClass<UAnimGraphNode_Base>(nullptr, *NodeClassPath);
+    if (!NodeClass)
+    {
+        UE_LOG(LogMCPBridge, Warning,
+            TEXT("AddAnimGraphNode: '%s' is not a loadable UAnimGraphNode_Base class"), *NodeClassPath);
+        return FString();
+    }
+    if (NodeClass->HasAnyClassFlags(CLASS_Abstract))
+    {
+        UE_LOG(LogMCPBridge, Warning, TEXT("AddAnimGraphNode: '%s' is abstract"), *NodeClassPath);
+        return FString();
+    }
+
+    // Mirrors FEdGraphSchemaAction_NewNode::PerformAction, the editor's own placement path. The order
+    // matters and PostPlacedNewNode is not optional: it is where an anim node finishes constructing
+    // itself, and a node that skips it can end up in the graph looking correct while compiling to
+    // nothing.
+    UAnimGraphNode_Base* NewNode = NewObject<UAnimGraphNode_Base>(Graph, NodeClass);
+    NewNode->SetFlags(RF_Transactional);
+    Graph->AddNode(NewNode, false, false);
+    NewNode->CreateNewGuid();
+    NewNode->PostPlacedNewNode();
+    NewNode->NodePosX = PosX;
+    NewNode->NodePosY = PosY;
+    NewNode->AllocateDefaultPins();
+
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBlueprint);
+    AnimBlueprint->MarkPackageDirty();
+    return NewNode->GetName();
+}
+
+bool UMCPGraphEditLibrary::LinkUseCachedPose(
+    UAnimBlueprint* AnimBlueprint,
+    const FString& GraphName,
+    const FString& UseNodeName,
+    const FString& SaveNodeName)
+{
+    if (!AnimBlueprint) return false;
+    UEdGraph* Graph = FindGraphByName(AnimBlueprint, GraphName);
+    if (!Graph) return false;
+
+    UAnimGraphNode_UseCachedPose* UseNode = Cast<UAnimGraphNode_UseCachedPose>(FindNodeByName(Graph, UseNodeName));
+    UAnimGraphNode_SaveCachedPose* SaveNode = Cast<UAnimGraphNode_SaveCachedPose>(FindNodeByName(Graph, SaveNodeName));
+    if (!UseNode || !SaveNode)
+    {
+        UE_LOG(LogMCPBridge, Warning,
+            TEXT("LinkUseCachedPose: node missing or wrong type (use=%s ok=%d, save=%s ok=%d)"),
+            *UseNodeName, UseNode != nullptr, *SaveNodeName, SaveNode != nullptr);
+        return false;
+    }
+
+    UseNode->SaveCachedPoseNode = SaveNode;
+    // The Use node names itself after its target and only grows its pose pin once it has one, so it has
+    // to be rebuilt rather than just assigned to.
+    UseNode->ReconstructNode();
+
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBlueprint);
+    AnimBlueprint->MarkPackageDirty();
+    return true;
 }
 
 FString UMCPGraphEditLibrary::AddAnimSlotNode(

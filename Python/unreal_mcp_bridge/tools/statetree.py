@@ -112,6 +112,79 @@ def register_statetree_tools(mcp: FastMCP, conn: UnrealConnection) -> None:
         })
 
     @mcp.tool()
+    def statetree_remove_state(tree_path: str, state_id: str) -> dict:
+        """Removes a state (and everything under it) from a StateTree by its GUID. A
+        root-level state is removed from the tree's SubTrees; otherwise it is removed from
+        its parent's children. Use to delete duplicate/stray states left by earlier edits.
+        Returns {"removed": true}."""
+        if not tree_path:
+            raise ValueError("tree_path is required")
+        if not state_id:
+            raise ValueError("state_id is required")
+        return conn.call("statetree.remove_state", {
+            "tree_path": tree_path,
+            "state_id": state_id,
+        })
+
+    @mcp.tool()
+    def statetree_add_condition(
+        tree_path: str,
+        transition_id: str = "",
+        state_id: str = "",
+        struct_path: str = "",
+    ) -> dict:
+        """Adds a condition node, gating either a transition (pass transition_id) or a state's
+        selection (pass state_id — an enter condition, evaluated when the tree considers the state
+        rather than every tick). Pass exactly one of the two.
+
+        struct_path defaults to "/Script/StateTreeModule.StateTreeCompareBoolCondition" (compares a
+        bound bool input `bLeft` against a constant `bRight`). Other useful ones:
+        "/Script/StateTreeModule.StateTreeRandomCondition" (parameter "Threshold", 0..1 — passes with
+        that probability, for chance-based state selection).
+
+        Typical wiring: statetree_add_binding to bind an evaluator bool output (e.g. "bHasTarget") to
+        the condition's "bLeft", then statetree_set_node_property to set the constant "bRight".
+        Returns {"node_id": <guid>} for the new condition node."""
+        if not tree_path:
+            raise ValueError("tree_path is required")
+        if bool(transition_id) == bool(state_id):
+            raise ValueError("provide exactly one of transition_id or state_id")
+        params: dict = {"tree_path": tree_path}
+        if transition_id:
+            params["transition_id"] = transition_id
+        if state_id:
+            params["state_id"] = state_id
+        if struct_path:
+            params["struct_path"] = struct_path
+        return conn.call("statetree.add_condition", params)
+
+    @mcp.tool()
+    def statetree_set_node_property(
+        tree_path: str,
+        node_id: str,
+        property: str,
+        value: str,
+    ) -> dict:
+        """Sets a property on a node's instance data by reflection. Works on any
+        evaluator/task/condition node found by node_id. value is Unreal import text, e.g.
+        "true" for a bool, or "(TagName=\\"Ability.Monster.Melee\\")" for a GameplayTag.
+        Use to set a task's AbilityTag, a CompareBool condition's "bRight" constant, etc.
+        Returns {"ok": true}."""
+        for name, val in (
+            ("tree_path", tree_path),
+            ("node_id", node_id),
+            ("property", property),
+        ):
+            if not val:
+                raise ValueError(f"{name} is required")
+        return conn.call("statetree.set_node_property", {
+            "tree_path": tree_path,
+            "node_id": node_id,
+            "property": property,
+            "value": value,
+        })
+
+    @mcp.tool()
     def statetree_compile(tree_path: str) -> dict:
         """Compiles the StateTree from its editor data (states/tasks/transitions/bindings)
         into runtime data and updates the compiled hash. Call after finishing edits.

@@ -9,8 +9,10 @@
 #include "Commands/CompileCommands.h"
 #include "Commands/PIECommands.h"
 #include "Commands/AnimGraphCommands.h"
+#include "Commands/AnimNotifyCommands.h"
 #include "Commands/StateTreeCommands.h"
 #include "Commands/CameraRigCommands.h"
+#include "Commands/CameraVariableCommands.h"
 
 void UMCPBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -47,8 +49,10 @@ void UMCPBridgeSubsystem::StartListener()
         Handlers.Add(MakeShared<FCompileCommandHandler>());
         Handlers.Add(MakeShared<FPIECommandHandler>());
         Handlers.Add(MakeShared<FAnimGraphCommandHandler>());
+        Handlers.Add(MakeShared<FAnimNotifyCommandHandler>());
         Handlers.Add(MakeShared<FStateTreeCommandHandler>());
         Handlers.Add(MakeShared<FCameraRigCommandHandler>());
+        Handlers.Add(MakeShared<FCameraVariableCommandHandler>());
 
         for (const TSharedPtr<IMCPCommandHandler>& Handler : Handlers)
         {

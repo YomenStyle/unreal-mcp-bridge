@@ -108,6 +108,42 @@ namespace
         Node.ID = FGuid::NewGuid();
         return Node.ID;
     }
+
+    // Finds a transition by its GUID across every state. Returns nullptr if not found.
+    FStateTreeTransition* FindTransitionById(UStateTreeEditorData* Ed, const FGuid& Id)
+    {
+        FStateTreeTransition* Found = nullptr;
+        Ed->VisitHierarchy([&Found, &Id](UStateTreeState& State, UStateTreeState* /*Parent*/)
+        {
+            for (FStateTreeTransition& T : State.Transitions)
+            {
+                if (T.ID == Id) { Found = &T; return EStateTreeVisitor::Break; }
+            }
+            return EStateTreeVisitor::Continue;
+        });
+        return Found;
+    }
+
+    // Finds an editor node (evaluator / global task / state task / single task / enter- or
+    // transition-condition) by its GUID. Returns nullptr if not found.
+    FStateTreeEditorNode* FindNodeById(UStateTreeEditorData* Ed, const FGuid& Id)
+    {
+        for (FStateTreeEditorNode& N : Ed->Evaluators)  { if (N.ID == Id) return &N; }
+        for (FStateTreeEditorNode& N : Ed->GlobalTasks) { if (N.ID == Id) return &N; }
+        FStateTreeEditorNode* Found = nullptr;
+        Ed->VisitHierarchy([&Found, &Id](UStateTreeState& State, UStateTreeState* /*Parent*/)
+        {
+            for (FStateTreeEditorNode& N : State.Tasks)           { if (N.ID == Id) { Found = &N; return EStateTreeVisitor::Break; } }
+            for (FStateTreeEditorNode& N : State.EnterConditions) { if (N.ID == Id) { Found = &N; return EStateTreeVisitor::Break; } }
+            if (State.SingleTask.ID == Id) { Found = &State.SingleTask; return EStateTreeVisitor::Break; }
+            for (FStateTreeTransition& T : State.Transitions)
+            {
+                for (FStateTreeEditorNode& N : T.Conditions) { if (N.ID == Id) { Found = &N; return EStateTreeVisitor::Break; } }
+            }
+            return EStateTreeVisitor::Continue;
+        });
+        return Found;
+    }
 }
 
 void FStateTreeCommandHandler::RegisterCommands(FMCPCommandRegistry& Registry)
@@ -244,6 +280,128 @@ void FStateTreeCommandHandler::RegisterCommands(FMCPCommandRegistry& Registry)
             auto Result = MakeShared<FJsonObject>();
             Result->SetBoolField(TEXT("ok"), true);
             return Result;
+        });
+
+    // statetree.remove_state — removes a state (and its subtree) by id. Params: tree_path, state_id.
+    // Returns { removed }. Root-level states are removed from the tree's SubTrees.
+    Registry.Register(TEXT("statetree.remove_state"),
+        [](const TSharedPtr<FJsonObject>& Params, MCPProtocol::FMCPError& OutError) -> TSharedPtr<FJsonObject>
+        {
+            UStateTree* Tree = LoadTree(Params, OutError); if (!Tree) return nullptr;
+            UStateTreeEditorData* Ed = GetEditorData(Tree, OutError); if (!Ed) return nullptr;
+
+            FString StateId; if (!RequireString(Params, TEXT("state_id"), StateId, OutError)) return nullptr;
+            FGuid Guid; FGuid::Parse(StateId, Guid);
+            UStateTreeState* State = FindStateById(Ed, Guid);
+            if (!State) { OutError.Code = MCPProtocol::FMCPError::InvalidParams; OutError.Message = TEXT("state_id not found"); return nullptr; }
+
+            if (UStateTreeState* Parent = State->Parent)
+            {
+                Parent->Modify();
+                Parent->Children.Remove(State);
+            }
+            else
+            {
+                Ed->Modify();
+                Ed->SubTrees.Remove(State);
+            }
+            Tree->MarkPackageDirty();
+
+            auto Result = MakeShared<FJsonObject>();
+            Result->SetBoolField(TEXT("removed"), true);
+            return Result;
+        });
+
+    // statetree.add_condition — adds a condition node, gating either a transition (transition_id) or a
+    // state's selection (state_id, an enter condition). Params: tree_path, one of transition_id/state_id,
+    // struct_path (optional; default FStateTreeCompareBoolCondition). Returns { node_id }.
+    // Typical wiring: bind an evaluator bool output to the condition input via add_binding
+    // (target_path "bLeft"), then set the compared constant via set_node_property (property "bRight").
+    Registry.Register(TEXT("statetree.add_condition"),
+        [](const TSharedPtr<FJsonObject>& Params, MCPProtocol::FMCPError& OutError) -> TSharedPtr<FJsonObject>
+        {
+            UStateTree* Tree = LoadTree(Params, OutError); if (!Tree) return nullptr;
+            UStateTreeEditorData* Ed = GetEditorData(Tree, OutError); if (!Ed) return nullptr;
+
+            FString TransId, StateId;
+            Params->TryGetStringField(TEXT("transition_id"), TransId);
+            Params->TryGetStringField(TEXT("state_id"), StateId);
+            if (TransId.IsEmpty() == StateId.IsEmpty())
+            {
+                OutError.Code = MCPProtocol::FMCPError::InvalidParams;
+                OutError.Message = TEXT("provide exactly one of transition_id (transition condition) or state_id (enter condition)");
+                return nullptr;
+            }
+
+            FString StructPath; Params->TryGetStringField(TEXT("struct_path"), StructPath);
+            if (StructPath.IsEmpty()) { StructPath = TEXT("/Script/StateTreeModule.StateTreeCompareBoolCondition"); }
+            const UScriptStruct* Struct = FindNodeStruct(StructPath);
+            if (!Struct) { OutError.Code = MCPProtocol::FMCPError::InvalidParams; OutError.Message = FString::Printf(TEXT("struct not found: %s"), *StructPath); return nullptr; }
+
+            TArray<FStateTreeEditorNode>* Target = nullptr;
+            if (!TransId.IsEmpty())
+            {
+                FGuid TransGuid; FGuid::Parse(TransId, TransGuid);
+                FStateTreeTransition* Transition = FindTransitionById(Ed, TransGuid);
+                if (!Transition) { OutError.Code = MCPProtocol::FMCPError::InvalidParams; OutError.Message = TEXT("transition_id not found"); return nullptr; }
+                Target = &Transition->Conditions;
+            }
+            else
+            {
+                FGuid StateGuid; FGuid::Parse(StateId, StateGuid);
+                UStateTreeState* State = FindStateById(Ed, StateGuid);
+                if (!State) { OutError.Code = MCPProtocol::FMCPError::InvalidParams; OutError.Message = TEXT("state_id not found"); return nullptr; }
+                State->Modify();
+                Target = &State->EnterConditions;
+            }
+
+            const FGuid Id = AddNodeToArray(*Target, Ed, Struct);
+            Tree->MarkPackageDirty();
+
+            auto Result = MakeShared<FJsonObject>();
+            Result->SetStringField(TEXT("node_id"), Id.ToString());
+            return Result;
+        });
+
+    // statetree.set_node_property — sets a property on a node's instance data by reflection.
+    // Works for any evaluator/task/condition node found by id. Params: tree_path, node_id,
+    // property (name), value (Unreal import text, e.g. "true" or "(TagName=\"Ability.Monster.Melee\")").
+    // Returns { ok }.
+    Registry.Register(TEXT("statetree.set_node_property"),
+        [](const TSharedPtr<FJsonObject>& Params, MCPProtocol::FMCPError& OutError) -> TSharedPtr<FJsonObject>
+        {
+            UStateTree* Tree = LoadTree(Params, OutError); if (!Tree) return nullptr;
+            UStateTreeEditorData* Ed = GetEditorData(Tree, OutError); if (!Ed) return nullptr;
+
+            FString NodeId, PropName, Value;
+            if (!RequireString(Params, TEXT("node_id"), NodeId, OutError)) return nullptr;
+            if (!RequireString(Params, TEXT("property"), PropName, OutError)) return nullptr;
+            if (!Params->TryGetStringField(TEXT("value"), Value))
+            {
+                OutError.Code = MCPProtocol::FMCPError::InvalidParams; OutError.Message = TEXT("value is required"); return nullptr;
+            }
+
+            FGuid Guid; FGuid::Parse(NodeId, Guid);
+            FStateTreeEditorNode* Node = FindNodeById(Ed, Guid);
+            if (!Node) { OutError.Code = MCPProtocol::FMCPError::InvalidParams; OutError.Message = TEXT("node_id not found"); return nullptr; }
+
+            const FStateTreeDataView View = Node->GetInstance();
+            const UStruct* Struct = View.GetStruct();
+            void* Memory = View.GetMutableMemory();
+            if (!Struct || !Memory) { OutError.Code = MCPProtocol::FMCPError::InternalError; OutError.Message = TEXT("node has no instance data"); return nullptr; }
+
+            FProperty* Prop = Struct->FindPropertyByName(FName(*PropName));
+            if (!Prop) { OutError.Code = MCPProtocol::FMCPError::InvalidParams; OutError.Message = FString::Printf(TEXT("property not found: %s"), *PropName); return nullptr; }
+
+            void* Addr = Prop->ContainerPtrToValuePtr<void>(Memory);
+            Ed->Modify();
+            const TCHAR* Result = Prop->ImportText_Direct(*Value, Addr, nullptr, PPF_None);
+            if (Result == nullptr) { OutError.Code = MCPProtocol::FMCPError::InvalidParams; OutError.Message = FString::Printf(TEXT("failed to import value '%s' for %s"), *Value, *PropName); return nullptr; }
+            Tree->MarkPackageDirty();
+
+            auto Out = MakeShared<FJsonObject>();
+            Out->SetBoolField(TEXT("ok"), true);
+            return Out;
         });
 
     // statetree.compile — compiles the StateTree from its editor data. Params: tree_path.

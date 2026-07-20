@@ -49,6 +49,9 @@ public:
         int32 PosY);
 
     // Connects two pins. Returns true on success.
+    // Links SrcNode.SrcPin -> DstNode.DstPin through the graph's schema (what an editor drag does), so
+    // the pair is validated, both nodes are notified, and any needed conversion node is inserted.
+    // Returns false (and logs the schema's reason) if the connection is refused.
     UFUNCTION(BlueprintCallable, Category = "MCP|Graph", meta = (DevelopmentOnly))
     static bool ConnectPins(
         UBlueprint* Blueprint,
@@ -140,6 +143,32 @@ public:
         bool bLoop,
         int32 PosX,
         int32 PosY);
+
+    // Adds an anim graph node of an arbitrary class to the named graph — the escape hatch for the
+    // node types this library has no dedicated Add* for (ModifyBone, TwoBoneIK, LookAt, ...).
+    // NodeClassPath is a class path, e.g. "/Script/AnimGraph.AnimGraphNode_ModifyBone".
+    //
+    // The node's own settings are left at their class defaults: fetch the returned node by object path
+    // (`<graph path>.<returned name>`) and set them via the reflection system, then wire it with
+    // ConnectPins. Returns the new node's name, or empty on failure.
+    UFUNCTION(BlueprintCallable, Category = "MCP|AnimGraph", meta = (DevelopmentOnly))
+    static FString AddAnimGraphNode(
+        UAnimBlueprint* AnimBlueprint,
+        const FString& GraphName,
+        const FString& NodeClassPath,
+        int32 PosX,
+        int32 PosY);
+
+    // Points a Use Cached Pose node at a Save Cached Pose node. Needed because a pose output pin takes
+    // only ONE link — feeding the same pose to two places (e.g. a layered blend's base *and* a slot)
+    // means caching it. The link is a plain UPROPERTY with no editor exposure, so it cannot be set from
+    // Python; hence this. Returns false if either node is missing or of the wrong type.
+    UFUNCTION(BlueprintCallable, Category = "MCP|AnimGraph", meta = (DevelopmentOnly))
+    static bool LinkUseCachedPose(
+        UAnimBlueprint* AnimBlueprint,
+        const FString& GraphName,
+        const FString& UseNodeName,
+        const FString& SaveNodeName);
 
     // Adds a Slot node (montage layering point) to the named top-level AnimGraph. SlotName must
     // match a slot defined on the Skeleton (e.g. "UpperBody"); a montage authored on that slot only
